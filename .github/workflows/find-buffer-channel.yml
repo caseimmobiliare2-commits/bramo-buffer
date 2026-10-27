@@ -1,0 +1,58 @@
+name: Find Buffer Channel ID (read only)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  find-channel:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Read organizations and connected channels (does not publish)
+        env:
+          BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          from urllib.request import Request, urlopen
+          from urllib.error import HTTPError, URLError
+
+          token = os.environ.get('BUFFER_API_KEY', '').strip()
+          if not token:
+              sys.exit('ERRORE: secret BUFFER_API_KEY mancante. Controlla Settings > Secrets and variables > Actions.')
+
+          def gql(query):
+              request = Request('https://api.buffer.com',
+                  data=json.dumps({'query': query}).encode('utf-8'),
+                  headers={'Content-Type': 'application/json', 'Authorization': f'Bearer {token}'},
+                  method='POST')
+              try:
+                  with urlopen(request, timeout=30) as response:
+                      result = json.load(response)
+              except HTTPError as e:
+                  sys.exit(f'Buffer ha restituito HTTP {e.code}. Verifica che la chiave sia valida e abbia i permessi di lettura.')
+              except (URLError, TimeoutError) as e:
+                  sys.exit(f'Impossibile contattare Buffer: {type(e).__name__}')
+              if result.get('errors'):
+                  messages = [err.get('message','Errore GraphQL') for err in result['errors']]
+                  sys.exit('Errore GraphQL: ' + '; '.join(messages))
+              return result.get('data') or {}
+
+          organizations = (gql('query GetOrganizations { account { organizations { id name } } }')
+                           .get('account') or {}).get('organizations') or []
+          if not organizations:
+              sys.exit('Nessuna organizzazione Buffer trovata per questa chiave.')
+          for organization in organizations:
+              oid = organization['id']
+              print(f"Organizzazione: {organization.get('name', '(senza nome)')} / ID: {oid}")
+              channels = gql('query GetChannels { channels(input: { organizationId: '
+                             + json.dumps(oid) + ' }) { id name service } }').get('channels') or []
+              if not channels:
+                  print('  Nessun canale collegato.')
+              for channel in channels:
+                  print(f"  Canale: {channel.get('name')} | Servizio: {channel.get('service')} | BUFFER_CHANNEL_ID: {channel.get('id')}")
+          print('Fine: sola lettura, nessun post creato.')
+          PY
